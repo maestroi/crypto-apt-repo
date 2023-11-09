@@ -1,12 +1,14 @@
 # crypto-apt-repo
 
-YourDescription - A brief description of what your project does and who it's for.
+This project is created to play around with debian packages and apt repositories.
+Just wanted to learn how this works and how to create a repository for my own packages.
 
 ## Features
 
-- Feature 1: What it does
-- Feature 2: How it improves the workflow
-- Feature 3: Any additional benefits
+- Creates a debian package
+- Creates a apt repository
+- Hosts the apt repository
+- Installs the package from the repository
 
 ## Prerequisites
 
@@ -21,7 +23,7 @@ These instructions will get your copy of the project up and running on your loca
 
 ### Installation
 
-To install YourProjectName, follow these steps:
+To install crypto-apt-repo, follow these steps:
 
 1. Clone the repository:
 
