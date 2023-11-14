@@ -1,1 +1,5 @@
 *.deb
+Packages
+*.gz
+acme.json
+temp_*

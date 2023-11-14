@@ -1,0 +1,95 @@
+#!/bin/bash
+setup_directory() {
+    local dir=$1
+    if [ ! -d "$dir" ]; then
+        if mkdir -p "$dir" && chown solana:solana "$dir" && chmod 750 "$dir"; then
+            echo "Directory $dir set up successfully."
+        else
+            echo "Failed to set up directory $dir. Aborting installation."
+            exit 1
+        fi
+    else
+        echo "Directory $dir already exists. Ensuring correct permissions."
+        chown solana:solana "$dir" && chmod 750 "$dir"
+    fi
+}
+# Directories for ledger and accounts
+ledger_dir="/var/lib/solana/ledger"
+accounts_dir="/var/lib/solana/accounts"
+
+# Define keypair directory and file
+keypair_directory="/etc/solana-rpc/keys"
+keypair_file="$keypair_directory/validator-keypair.json"
+
+# Check if the 'solana' user already exists
+if id "solana" &>/dev/null; then
+    echo "User 'solana' already exists. Continuing with the installation."
+else
+    # Create the user if it does not exist
+    if useradd -m -d /home/solana -s /bin/bash solana; then
+        echo "User 'solana' created."
+    else
+        echo "Failed to create user 'solana'. Aborting installation."
+        exit 1
+    fi
+fi
+
+# Create and set permissions for the log directory
+setup_directory "/var/log/solana"
+
+# Create the logrotate config
+cat > /etc/logrotate.d/solana-rpc << EOF
+/var/log/solana/solana.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    create 640 solana solana
+    missingok
+}
+EOF
+
+# Ensure permissions are correct
+chown root:root /etc/logrotate.d/solana-rpc
+chmod 644 /etc/logrotate.d/solana-rpc
+
+# Install keypair
+if [ -f "$keypair_file" ]; then
+    echo "Validator keypair already exists. Skipping keypair generation."
+else
+    # Ensure the directory for the keypair exists and generate the keypair
+    if mkdir -p "$keypair_directory" && chown solana:solana "$keypair_directory" && chmod 700 "$keypair_directory" && sudo -u solana /usr/bin/solana-keygen new -o "$keypair_file"; then
+        echo "Validator keypair generated successfully."
+    else
+        echo "Failed to generate validator keypair. Aborting installation."
+        exit 1
+    fi
+    # Set permissions for the keypair
+    chmod 600 "$keypair_file"
+fi
+
+config_file="/etc/solana-rpc/config.env"
+if [ -f "$config_file" ]; then
+    echo "Configuration file already exists. Checking for updates."
+    # Implement logic here to handle updates if necessary
+    # ...
+else
+    echo "Select the Solana environment: (1) Testnet, (2) Devnet, (3) Mainnet"
+    read -p "Enter your choice: " choice
+    # Apply the selected configuration
+    case $choice in
+        1) cp /etc/solana-rpc/config-testnet.env "$config_file" ;;
+        2) cp /etc/solana-rpc/config-devnet.env "$config_file" ;;
+        3) cp /etc/solana-rpc/config-mainnet.env "$config_file" ;;
+        *) echo "Invalid choice. Aborting."; exit 1 ;;
+    esac
+fi
+
+# Reload the daemon and (re)start the service
+if systemctl daemon-reload && systemctl restart solana-rpc.service; then
+    echo "Solana RPC service (re)started successfully."
+else
+    echo "Failed to (re)start Solana RPC service. Please check the system logs."
+    exit 1
+fi

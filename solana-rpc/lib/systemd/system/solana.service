@@ -1,0 +1,13 @@
+[Unit]
+Description=Solana RPC Service
+After=network.target
+
+[Service]
+User=solana
+Group=solana
+EnvironmentFile=/etc/solana-rpc/config.env
+ExecStart=/usr/bin/solana-validator-wrapper
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

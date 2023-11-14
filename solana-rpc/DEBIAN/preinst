@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# Check CPU cores
+required_cores=16
+cores=$(grep -c ^processor /proc/cpuinfo)
+if [ "$cores" -lt "$required_cores" ]; then
+    echo "Insufficient CPU cores: $cores detected, but $required_cores are required."
+    exit 1
+fi
+
+# Check RAM
+required_ram=134217728 # 128GB in KB
+ram=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+if [ "$ram" -lt "$required_ram" ]; then
+    echo "Insufficient RAM: $(($ram / 1024 / 1024))GB detected, but 128GB are required."
+    exit 1
+fi
+
+# Check Disk Space
+required_disk=2000000 # 2TB in MB
+disk=$(df --output=avail / | tail -n 1)
+if [ "$disk" -lt "$required_disk" ]; then
+    echo "Insufficient disk space: $(($disk / 1024))MB available, but 2TB are required."
+    exit 1
+fi
+
+# Continue with installation

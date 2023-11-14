@@ -4,6 +4,7 @@ services:
     build: .
     volumes:
       - ./cryptobinaryapt:/cryptobinaryapt
+      - ./solana-rpc:/solana-rpc
       - ./control.json:/app/control.json
 
   reverse-proxy:

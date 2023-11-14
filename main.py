@@ -10,10 +10,7 @@ import shutil
 import gzip
 
 # Initialize logging
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s — %(message)s',
-                    datefmt='%Y-%m-%d_%H:%M:%S',
-                    handlers=[logging.StreamHandler()])
+logging.basicConfig(level=logging.INFO, format='%(asctime)s — %(message)s', datefmt='%Y-%m-%d_%H:%M:%S', handlers=[logging.StreamHandler()])
 
 # Constants
 GITHUB_API = "https://api.github.com"
@@ -21,6 +18,8 @@ REPO_OWNER = "solana-labs"
 REPO_NAME = "solana"
 LATEST_RELEASE_ENDPOINT = f"{GITHUB_API}/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
 FILE_NAME_PATTERN = "solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+BINARIES = ['solana-gossip', 'solana-keygen', 'solana-ledger-tool', 'solana-validator', 'solana']
+CRYPTO_BINARY_APT_PATH = 'cryptobinaryapt'
 
 def get_latest_release():
     response = requests.get(LATEST_RELEASE_ENDPOINT)
@@ -29,7 +28,11 @@ def get_latest_release():
     return response.json()
 
 def download_tarball(tarball_url, version):
-    tarball_path = os.path.join(version, FILE_NAME_PATTERN)
+    version_dir = os.path.join(os.getcwd(), version)
+    if not os.path.exists(version_dir):
+        os.makedirs(version_dir)
+
+    tarball_path = os.path.join(version_dir, FILE_NAME_PATTERN)
     response = requests.get(tarball_url, stream=True)
     if response.status_code == 200:
         with open(tarball_path, 'wb') as file:
@@ -43,88 +46,73 @@ def download_tarball(tarball_url, version):
 def extract_tarball(tarball_path, target_dir):
     with tarfile.open(tarball_path, 'r:bz2') as tar:
         tar.extractall(path=target_dir)
-        # Store the directory name before the TarFile object is closed
-        top_level_dir_name = tar.getnames()[0]
-    # Return the path to the solana-validator executable
-    return os.path.join(target_dir, top_level_dir_name, 'bin', 'solana-validator')
+        top_level_dir_name = tar.getnames()[0].split('/')[0]
+    return {binary: os.path.join(target_dir, top_level_dir_name, 'bin', binary) for binary in BINARIES}
 
-def create_debian_package(version, validator_path, control_info):
+
+def build_package(version, binaries):
     try:
-        # Ensure version does not have 'v' prefix
-        debian_version = version.lstrip('v')
-        control_info['Version'] = debian_version
+        # Load control information
+        with open('control.json') as json_file:
+            control_info = json.load(json_file)
 
-        # Construct the package file name
-        package_name = f"{control_info['Package']}_{debian_version}_{control_info['Architecture']}"
+        # Update version in control info
+        control_info['Version'] = version
 
-        # Define directories and file paths
-        base_dir = "/cryptobinaryapt"
-        pool_dir = os.path.join(base_dir, "pool", "main", "s", "solana-validator")
-        package_dir = os.path.join(base_dir,package_name)
-        debian_dir = os.path.join(package_dir, "DEBIAN")
-        bin_dir = os.path.join(package_dir, "usr", "local", "bin")
+        package_structure_dir = "solana-rpc"
+        temp_package_dir = f"temp_package_{version}"
 
-        # Create necessary directories
-        os.makedirs(debian_dir, exist_ok=True)
-        os.makedirs(bin_dir, exist_ok=True)
-        os.makedirs(pool_dir, exist_ok=True)  # Make sure the pool directory exists
+        # Copy package structure to temp directory
+        shutil.copytree(package_structure_dir, temp_package_dir)
 
-        # Create control file
-        control_content = "\n".join(f"{key}: {value}" for key, value in control_info.items()) + "\n"
-        with open(os.path.join(debian_dir, "control"), 'w') as control_file:
-            control_file.write(control_content)
+        # Create control file in DEBIAN directory
+        control_file_path = os.path.join(temp_package_dir, "DEBIAN", "control")
+        with open(control_file_path, 'w') as control_file:
+            for key, value in control_info.items():
+                control_file.write(f"{key}: {value}\n")
 
-        # Move the validator binary to the package directory
-        shutil.move(validator_path, os.path.join(bin_dir, 'solana-validator'))
-
-        # Set the permissions for the package directory
-        set_permissions(package_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
-                        stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        # Copy binaries to the right directory in the temp package
+        bin_dir = os.path.join(temp_package_dir, "DEBIAN", "usr", "bin")  # Adjusted to correct path
+        for binary, path in binaries.items():
+            shutil.copy(path, os.path.join(bin_dir, binary))
 
         # Build the Debian package
-        subprocess.run(['dpkg-deb', '--build', package_dir])
+        package_name = f"solana-rpc_{version}_amd64.deb"
+        subprocess.run(['dpkg-deb', '--build', temp_package_dir, package_name])
 
-        # Locate the .deb file and move it to the pool directory
-        deb_file_name = f"{package_name}.deb"
-        deb_file_path = os.path.join(base_dir, deb_file_name)
-        shutil.move(deb_file_path, pool_dir)
-        logging.info(f"Debian package for version {debian_version} created at {pool_dir}/{deb_file_name}")
+        logging.info(f"Package {package_name} created successfully.")
 
-        # Run dpkg-scanpackages to generate the Packages file
-        dists_dir = os.path.join(base_dir, "dists")
-        os.makedirs(dists_dir, exist_ok=True)
-        
-        # Update package file
-        update_packages_file(pool_dir, dists_dir)
-        shutil.rmtree(package_dir)  # Remove the package directory
+        # Define the target directory for the .deb file
+        target_dir = os.path.join(CRYPTO_BINARY_APT_PATH, "pool", "main", "s", "solana-rpc")
+        os.makedirs(target_dir, exist_ok=True)
 
-        logging.info(f"Updated Packages file in {dists_dir}")
+        # Move the .deb file to the target directory
+        shutil.move(package_name, os.path.join(target_dir, package_name))
+
+        # Update the package file
+        update_packages_file(target_dir)
+
+        # Clean up
+        shutil.rmtree(temp_package_dir)
+
     except Exception as e:
         logging.error(f"An error occurred: {e}")
 
-def set_permissions(path, dir_perms, file_perms):
-    for root, dirs, files in os.walk(path):
-        for d in dirs:
-            os.chmod(os.path.join(root, d), dir_perms)
-        for f in files:
-            os.chmod(os.path.join(root, f), file_perms)
+def clean_version(version):
+    version_dir = os.path.join(os.getcwd(), version)
+    shutil.rmtree(version_dir)
+    logging.info(f"Removed version directory {version_dir}")
 
 
-def package_exists(version, pool_dir):
-    # Define the expected .deb file name based on the version
-    deb_file_name = f"solana-validator_{version}_amd64.deb"
-
-    # Check if the .deb package already exists
-    deb_file_path = os.path.join(pool_dir, deb_file_name)
-    return os.path.isfile(deb_file_path)
-
-def update_packages_file(pool_dir, dists_dir):
-    # Ensure the directory structure exists
-    arch_dir = os.path.join(dists_dir, 'stable', 'main', 'binary-amd64')
-    os.makedirs(arch_dir, exist_ok=True)
+def update_packages_file(pool_dir):
+    # Define the directory where the Packages file will be stored
+    dists_dir = os.path.join(CRYPTO_BINARY_APT_PATH, "dists", "stable", "main", "binary-amd64")
+    os.makedirs(dists_dir, exist_ok=True)
     
+    pool_dir = os.path.join(CRYPTO_BINARY_APT_PATH, "pool", "main", "s")
+
     # Path for the Packages file
-    packages_file_path = os.path.join(arch_dir, 'Packages')
+    packages_file_path = os.path.join(dists_dir, 'Packages')
 
     # Generate the Packages file
     with open(packages_file_path, 'w') as packages_file:
@@ -135,51 +123,45 @@ def update_packages_file(pool_dir, dists_dir):
         with gzip.open(f'{packages_file_path}.gz', 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
 
-    logging.info(f"Updated Packages file in {arch_dir}")
+    logging.info(f"Updated Packages file in {dists_dir}")
 
 def main():
-    logging.info('Starting Solana Debian package creation...')
-    with open('control.json') as json_file:
-        control_info = json.load(json_file)
+    logging.info("Starting Solana Debian package creation...")
 
     release = get_latest_release()
-    logging.info(f"Latest release found: {release['tag_name']}")
+    version = release['tag_name'].lstrip('v')
+    package_name = f"solana-rpc_{version}_amd64.deb"
+    target_dir = os.path.join(CRYPTO_BINARY_APT_PATH, "pool", "main", "s", "solana-rpc")
+    package_path = os.path.join(target_dir, package_name)
+
+    # Check if the package already exists
+    if os.path.exists(package_path):
+        logging.info(f"Package {package_name} already exists. Skipping...")
+        return
+
     tarball_url = next((asset['browser_download_url'] for asset in release['assets'] if asset['name'] == FILE_NAME_PATTERN), None)
+    
     if not tarball_url:
         logging.error(f"Asset {FILE_NAME_PATTERN} not found in the latest release.")
-        raise Exception(f"Asset {FILE_NAME_PATTERN} not found in the latest release.")
+        return
 
-    latest_version = release['tag_name']
-    debian_version = latest_version.lstrip('v')
+    logging.info(f"Downloading tarball for version {version}")
+    tarball_path = download_tarball(tarball_url, version)
+
+    logging.info("Extracting binaries")
+    binaries = extract_tarball(tarball_path, version)
+
+    logging.info("Building package")
+    build_package(version, binaries)
     
-    # Define the output package directory based on the version
-    package_dir = f"solana-validator_{debian_version}_amd64"    
-    deb_file_name = f"{package_dir}.deb"
-
-    # Define the pool directory where .deb packages are stored
-    base_dir = "/cryptobinaryapt"
-    pool_dir = os.path.join(base_dir, "pool", "main", "s", "solana-validator")
-
-    # Check if the .deb package already exists
-    if package_exists(debian_version, pool_dir):
-        logging.info(f"Package for version {debian_version} already exists. Skipping package creation.")
-        return  # Skip the rest of the function
+    logging.info("Updating Packages file")
+    update_packages_file(target_dir)
     
-    logging.info(f"Creating directory for version: {latest_version}")
-    os.makedirs(latest_version, exist_ok=True)
-
-    logging.info(f"Downloading tarball from: {tarball_url}")
-    tarball_path = download_tarball(tarball_url, latest_version)
-
-    logging.info(f"Extracting tarball to directory: {latest_version}")
-    validator_path = extract_tarball(tarball_path, latest_version)
-
-    logging.info(f"Creating Debian package for version: {latest_version}")
-    create_debian_package(latest_version, validator_path, control_info)
-
-    logging.info(f"Debian package for version {latest_version} created successfully")
-
-
+    logging.info("Cleaning up")
+    clean_version(version)
+    
+    logging.info("Done")
+    
 if __name__ == "__main__":
     logging.info('Service started')
     while True:
